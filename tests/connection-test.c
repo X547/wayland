@@ -36,6 +36,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <poll.h>
+#define SOCK_CLOEXEC 0
 
 #include "wayland-private.h"
 #include "test-runner.h"

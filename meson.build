@@ -80,8 +80,8 @@ if get_option('libraries')
 	ffi_dep = dependency('libffi')
 
 	decls = [
-		{ 'header': 'sys/signalfd.h', 'symbol': 'SFD_CLOEXEC' },
-		{ 'header': 'sys/timerfd.h', 'symbol': 'TFD_CLOEXEC' },
+#		{ 'header': 'sys/signalfd.h', 'symbol': 'SFD_CLOEXEC' },
+#		{ 'header': 'sys/timerfd.h', 'symbol': 'TFD_CLOEXEC' },
 		{ 'header': 'time.h', 'symbol': 'CLOCK_MONOTONIC' },
 	]
 

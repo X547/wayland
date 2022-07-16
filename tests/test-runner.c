@@ -38,7 +38,9 @@
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
+#ifndef __HAIKU__
 #include <sys/ptrace.h>
+#endif
 #ifdef HAVE_SYS_PROCCTL_H
 #include <sys/procctl.h>
 #elif defined(HAVE_SYS_PRCTL_H)
@@ -307,6 +309,12 @@ is_debugger_attached(void)
 	}
 
 	return rc;
+}
+#elif defined(__HAIKU__)
+static int
+is_debugger_attached(void)
+{
+	return 0;
 }
 #endif
 

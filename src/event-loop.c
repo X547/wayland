@@ -37,7 +37,9 @@
 #include <sys/un.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
+#ifndef __HAIKU__
 #include <sys/timerfd.h>
+#endif
 #include <unistd.h>
 #include "wayland-util.h"
 #include "wayland-private.h"
@@ -100,6 +102,7 @@ wl_event_source_fd_dispatch(struct wl_event_source *source,
 	uint32_t mask;
 
 	mask = 0;
+#ifndef __HAIKU__
 	if (ep->events & EPOLLIN)
 		mask |= WL_EVENT_READABLE;
 	if (ep->events & EPOLLOUT)
@@ -108,6 +111,7 @@ wl_event_source_fd_dispatch(struct wl_event_source *source,
 		mask |= WL_EVENT_HANGUP;
 	if (ep->events & EPOLLERR)
 		mask |= WL_EVENT_ERROR;
+#endif
 
 	return fd_source->func(fd_source->fd, mask, source->data);
 }
@@ -120,6 +124,7 @@ static struct wl_event_source *
 add_source(struct wl_event_loop *loop,
 	   struct wl_event_source *source, uint32_t mask, void *data)
 {
+#ifndef __HAIKU__
 	struct epoll_event ep;
 
 	if (source->fd < 0) {
@@ -144,6 +149,7 @@ add_source(struct wl_event_loop *loop,
 		return NULL;
 	}
 
+#endif
 	return source;
 }
 
@@ -214,6 +220,9 @@ wl_event_loop_add_fd(struct wl_event_loop *loop,
 WL_EXPORT int
 wl_event_source_fd_update(struct wl_event_source *source, uint32_t mask)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct wl_event_loop *loop = source->loop;
 	struct epoll_event ep;
 
@@ -225,6 +234,7 @@ wl_event_source_fd_update(struct wl_event_source *source, uint32_t mask)
 	ep.data.ptr = source;
 
 	return epoll_ctl(loop->epoll_fd, EPOLL_CTL_MOD, source->fd, &ep);
+#endif
 }
 
 /** \cond INTERNAL */
@@ -258,17 +268,24 @@ time_lt(struct timespec ta, struct timespec tb)
 
 static int
 set_timer(int timerfd, struct timespec deadline) {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct itimerspec its;
 
 	its.it_interval.tv_sec = 0;
 	its.it_interval.tv_nsec = 0;
 	its.it_value = deadline;
 	return timerfd_settime(timerfd, TFD_TIMER_ABSTIME, &its, NULL);
+#endif
 }
 
 static int
 clear_timer(int timerfd)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct itimerspec its;
 
 	its.it_interval.tv_sec = 0;
@@ -276,6 +293,7 @@ clear_timer(int timerfd)
 	its.it_value.tv_sec = 0;
 	its.it_value.tv_nsec = 0;
 	return timerfd_settime(timerfd, 0, &its, NULL);
+#endif
 }
 
 static void
@@ -305,6 +323,9 @@ wl_timer_heap_release(struct wl_timer_heap *timers)
 static int
 wl_timer_heap_ensure_timerfd(struct wl_timer_heap *timers)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct epoll_event ep;
 	int timer_fd;
 
@@ -328,6 +349,7 @@ wl_timer_heap_ensure_timerfd(struct wl_timer_heap *timers)
 
 	timers->base.fd = timer_fd;
 	return 0;
+#endif
 }
 
 static int
@@ -674,6 +696,8 @@ wl_event_source_signal_dispatch(struct wl_event_source *source,
 {
 	struct wl_event_source_signal *signal_source =
 		(struct wl_event_source_signal *) source;
+
+#ifndef __HAIKU__
 	struct signalfd_siginfo signal_info;
 	int len;
 
@@ -681,6 +705,7 @@ wl_event_source_signal_dispatch(struct wl_event_source *source,
 	if (!(len == -1 && errno == EAGAIN) && len != sizeof signal_info)
 		/* Is there anything we can do here?  Will this ever happen? */
 		wl_log("signalfd read error: %s\n", strerror(errno));
+#endif
 
 	return signal_source->func(signal_source->signal_number,
 				   signal_source->base.data);
@@ -727,7 +752,11 @@ wl_event_loop_add_signal(struct wl_event_loop *loop,
 
 	sigemptyset(&mask);
 	sigaddset(&mask, signal_number);
+#ifdef __HAIKU__
+	source->base.fd = -1;
+#else
 	source->base.fd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
+#endif
 	sigprocmask(SIG_BLOCK, &mask, NULL);
 
 	source->func = func;
@@ -830,6 +859,9 @@ wl_event_source_remove(struct wl_event_source *source)
 {
 	struct wl_event_loop *loop = source->loop;
 
+#ifdef __HAIKU__
+	return -1;
+#else
 	/* We need to explicitly remove the fd, since closing the fd
 	 * isn't enough in case we've dup'ed the fd. */
 	if (source->fd >= 0) {
@@ -853,6 +885,7 @@ wl_event_source_remove(struct wl_event_source *source)
 	wl_list_insert(&loop->destroy_list, &source->link);
 
 	return 0;
+#endif
 }
 
 static void
@@ -932,6 +965,9 @@ wl_event_loop_destroy(struct wl_event_loop *loop)
 static bool
 post_dispatch_check(struct wl_event_loop *loop)
 {
+#if __HAIKU__
+	return false;
+#else
 	struct epoll_event ep;
 	struct wl_event_source *source, *next;
 	bool needs_recheck = false;
@@ -949,6 +985,7 @@ post_dispatch_check(struct wl_event_loop *loop)
 	}
 
 	return needs_recheck;
+#endif
 }
 
 /** Dispatch the idle sources
@@ -994,6 +1031,9 @@ wl_event_loop_dispatch_idle(struct wl_event_loop *loop)
 WL_EXPORT int
 wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct epoll_event ep[32];
 	struct wl_event_source *source;
 	int i, count;
@@ -1034,6 +1074,7 @@ wl_event_loop_dispatch(struct wl_event_loop *loop, int timeout)
 	while (post_dispatch_check(loop));
 
 	return 0;
+#endif
 }
 
 /** Get the event loop file descriptor
