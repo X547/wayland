@@ -181,6 +181,7 @@ if get_option('libraries')
 		# libwayland-server.so.0.x.y.
 		version: '.'.join(['0', wayland_version[1], wayland_version[2]]),
 		dependencies: [
+			cc.find_library('network'),
 			epoll_dep,
 			ffi_dep,
 			wayland_private_dep,
@@ -231,6 +232,7 @@ if get_option('libraries')
 		# libwayland-client.so.0.x.y.
 		version: '.'.join(['0', wayland_version[1], wayland_version[2]]),
 		dependencies: [
+			cc.find_library('network'),
 			epoll_dep,
 			ffi_dep,
 			wayland_private_dep,

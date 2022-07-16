@@ -27,6 +27,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <stdint.h>
+#define SOCK_CLOEXEC 0
 
 #include "wayland-server.h"
 #include "test-runner.h"

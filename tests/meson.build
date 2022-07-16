@@ -159,7 +159,7 @@ tests = {
 
 foreach test_name, test_extra_sources: tests
 	test_sources = [ test_name + '.c' ] + test_extra_sources
-	test_deps = [test_runner_dep, epoll_dep]
+	test_deps = [test_runner_dep, epoll_dep, cc.find_library('network')]
 	bin = executable(test_name, test_sources, dependencies: test_deps)
 	test(
 		test_name,

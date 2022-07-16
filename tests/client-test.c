@@ -33,6 +33,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#define SOCK_CLOEXEC 0
 
 #include "wayland-private.h"
 #include "wayland-server.h"

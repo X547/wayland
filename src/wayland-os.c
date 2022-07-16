@@ -201,7 +201,11 @@ wl_os_epoll_create_cloexec(void)
 		return -1;
 #endif
 
+#ifdef __HAIKU__
+	fd = -1;
+#else
 	fd = epoll_create(1);
+#endif
 	return set_cloexec_or_close(fd);
 }
 
