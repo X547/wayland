@@ -488,7 +488,7 @@ xcursor_xc_file_load_images(FILE *file, int size)
 #endif
 
 #ifndef XCURSORPATH
-#define XCURSORPATH "~/.icons:/usr/share/icons:/usr/share/pixmaps:~/.cursors:/usr/share/cursors/xorg-x11:"ICONDIR
+#define XCURSORPATH "~/.icons:/boot/home/config/non-packaged/data/icons:/usr/share/pixmaps:~/.cursors:/usr/share/cursors/xorg-x11:"ICONDIR
 #endif
 
 #define XDG_DATA_HOME_FALLBACK "~/.local/share"

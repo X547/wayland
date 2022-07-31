@@ -238,6 +238,7 @@ wl_map_insert_new(struct wl_map *map, uint32_t flags, void *data)
 	entry->data = data;
 	entry->next |= (flags & 0x1) << 1;
 
+	//fprintf(stderr, "wl_map_insert_new(%p, side: %s) -> %" PRIu32 "\n", map, map->side == WL_MAP_CLIENT_SIDE ? "client" : "server", count + base);
 	return count + base;
 }
 
@@ -247,6 +248,7 @@ wl_map_insert_at(struct wl_map *map, uint32_t flags, uint32_t i, void *data)
 	union map_entry *start;
 	uint32_t count;
 	struct wl_array *entries;
+	//fprintf(stderr, "wl_map_insert_at(%p, side: %s, i: %" PRIu32 ")\n", map, i < WL_SERVER_ID_START ? "client" : "server", i);
 
 	if (i < WL_SERVER_ID_START) {
 		entries = &map->client_entries;

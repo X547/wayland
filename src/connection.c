@@ -231,7 +231,7 @@ wl_connection_consume(struct wl_connection *connection, size_t size)
 }
 
 static void
-build_cmsg(struct wl_ring_buffer *buffer, char *data, size_t *clen)
+build_cmsg(struct wl_ring_buffer *buffer, char *data, int *clen)
 {
 	struct cmsghdr *cmsg;
 	size_t size;
@@ -288,11 +288,13 @@ decode_cmsg(struct wl_ring_buffer *buffer, struct msghdr *msg)
 int
 wl_connection_flush(struct wl_connection *connection)
 {
+#if __HAIKU__
+	abort();
+#endif
 	struct iovec iov[2];
-	struct msghdr msg = {0};
+	struct msghdr msg;
 	char cmsg[CLEN];
-	int len = 0, count;
-	size_t clen;
+	int len = 0, count, clen;
 	uint32_t tail;
 
 	if (!connection->want_flush)
@@ -304,10 +306,13 @@ wl_connection_flush(struct wl_connection *connection)
 
 		build_cmsg(&connection->fds_out, cmsg, &clen);
 
+		msg.msg_name = NULL;
+		msg.msg_namelen = 0;
 		msg.msg_iov = iov;
 		msg.msg_iovlen = count;
 		msg.msg_control = (clen > 0) ? cmsg : NULL;
 		msg.msg_controllen = clen;
+		msg.msg_flags = 0;
 
 		do {
 			len = sendmsg(connection->fd, &msg,
@@ -566,10 +571,10 @@ wl_closure_init(const struct wl_message *message, uint32_t size,
 
 	if (size) {
 		*num_arrays = wl_message_count_arrays(message);
-		closure = zalloc(sizeof *closure + size +
+		closure = malloc(sizeof *closure + size +
 				 *num_arrays * sizeof(struct wl_array));
 	} else {
-		closure = zalloc(sizeof *closure);
+		closure = malloc(sizeof *closure);
 	}
 
 	if (!closure) {
@@ -808,12 +813,10 @@ wl_connection_demarshal(struct wl_connection *connection,
 			}
 
 			if (wl_map_reserve_new(objects, id) < 0) {
-				if (errno == EINVAL) {
-					wl_log("not a valid new object id (%u), "
-					       "message %s(%s)\n", id,
-					       message->name,
-					       message->signature);
-				}
+				wl_log("not a valid new object id (%u), "
+				       "message %s(%s)\n",
+				       id, message->name, message->signature);
+				errno = EINVAL;
 				goto err;
 			}
 
@@ -1209,6 +1212,9 @@ overflow:
 int
 wl_closure_send(struct wl_closure *closure, struct wl_connection *connection)
 {
+	printf("wl_closure_send(), sender_id: %" PRIu32 "\n", closure->sender_id);
+	printf("[WAIT]"); fgetc(stdin);
+
 	int size;
 	uint32_t buffer_size;
 	uint32_t *buffer;
@@ -1271,19 +1277,11 @@ wl_closure_print(struct wl_closure *closure, struct wl_object *target,
 	const char *signature = closure->message->signature;
 	struct timespec tp;
 	unsigned int time;
-	uint32_t nval;
-	FILE *f;
-	char *buffer;
-	size_t buffer_length;
-
-	f = open_memstream(&buffer, &buffer_length);
-	if (f == NULL)
-		return;
 
 	clock_gettime(CLOCK_REALTIME, &tp);
 	time = (tp.tv_sec * 1000000L) + (tp.tv_nsec / 1000);
 
-	fprintf(f, "[%7u.%03u] %s%s%s@%u.%s(",
+	fprintf(stderr, "[%7u.%03u] %s%s%s@%u.%s(",
 		time / 1000, time % 1000,
 		discarded ? "discarded " : "",
 		send ? " -> " : "",
@@ -1293,72 +1291,62 @@ wl_closure_print(struct wl_closure *closure, struct wl_object *target,
 	for (i = 0; i < closure->count; i++) {
 		signature = get_next_argument(signature, &arg);
 		if (i > 0)
-			fprintf(f, ", ");
+			fprintf(stderr, ", ");
 
 		switch (arg.type) {
 		case 'u':
-			fprintf(f, "%u", closure->args[i].u);
+			fprintf(stderr, "%u", closure->args[i].u);
 			break;
 		case 'i':
-			fprintf(f, "%d", closure->args[i].i);
+			fprintf(stderr, "%d", closure->args[i].i);
 			break;
 		case 'f':
 			/* The magic number 390625 is 1e8 / 256 */
 			if (closure->args[i].f >= 0) {
-				fprintf(f, "%d.%08d",
+				fprintf(stderr, "%d.%08d",
 					closure->args[i].f / 256,
 					390625 * (closure->args[i].f % 256));
 			} else {
 
-				fprintf(f, "-%d.%08d",
+				fprintf(stderr, "-%d.%08d",
 					closure->args[i].f / -256,
 					-390625 * (closure->args[i].f % 256));
 			}
 			break;
 		case 's':
 			if (closure->args[i].s)
-				fprintf(f, "\"%s\"", closure->args[i].s);
+				fprintf(stderr, "\"%s\"", closure->args[i].s);
 			else
-				fprintf(f, "nil");
+				fprintf(stderr, "nil");
 			break;
 		case 'o':
 			if (closure->args[i].o)
-				fprintf(f, "%s@%u",
+				fprintf(stderr, "%s@%u",
 					closure->args[i].o->interface->name,
 					closure->args[i].o->id);
 			else
-				fprintf(f, "nil");
+				fprintf(stderr, "nil");
 			break;
 		case 'n':
-			if (n_parse)
-				nval = n_parse(&closure->args[i]);
-			else
-				nval = closure->args[i].n;
-
-			fprintf(f, "new id %s@",
+			fprintf(stderr, "new id %s@",
 				(closure->message->types[i]) ?
 				 closure->message->types[i]->name :
 				  "[unknown]");
-			if (nval != 0)
-				fprintf(f, "%u", nval);
+			if (closure->args[i].n != 0)
+				fprintf(stderr, "%u", closure->args[i].n);
 			else
-				fprintf(f, "nil");
+				fprintf(stderr, "nil");
 			break;
 		case 'a':
-			fprintf(f, "array[%zu]", closure->args[i].a->size);
+			fprintf(stderr, "array[%zu]", closure->args[i].a->size);
 			break;
 		case 'h':
-			fprintf(f, "fd %d", closure->args[i].h);
+			fprintf(stderr, "fd %d", closure->args[i].h);
 			break;
 		}
 	}
 
-	fprintf(f, ")\n");
-
-	if (fclose(f) == 0) {
-		fprintf(stderr, "%s", buffer);
-		free(buffer);
-	}
+	fprintf(stderr, ")\n");
 }
 
 static int

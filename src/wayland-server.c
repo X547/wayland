@@ -40,7 +40,9 @@
 #include <assert.h>
 #include <sys/time.h>
 #include <fcntl.h>
+#ifndef __HAIKU__
 #include <sys/eventfd.h>
+#endif
 #include <sys/file.h>
 #include <sys/stat.h>
 
@@ -71,8 +73,15 @@ struct wl_socket {
 	char *display_name;
 };
 
+typedef int (*client_enqueue_proc)(void *client_display, struct wl_closure *closure);
+
 struct wl_client {
+#ifdef __HAIKU__
+	void *client_display;
+	client_enqueue_proc client_enqueue;
+#else
 	struct wl_connection *connection;
+#endif
 	struct wl_event_source *source;
 	struct wl_display *display;
 	struct wl_resource *display_resource;
@@ -87,7 +96,9 @@ struct wl_client {
 };
 
 struct wl_display {
+#ifndef __HAIKU__
 	struct wl_event_loop *loop;
+#endif
 	int run;
 
 	uint32_t id;
@@ -204,6 +215,30 @@ verify_objects(struct wl_resource *resource, uint32_t opcode,
 	return true;
 }
 
+#ifdef __HAIKU__
+static void
+prepare_closure(struct wl_closure *closure)
+{
+	const char *signature;
+	struct argument_details arg;
+	struct wl_proxy *proxy;
+	int i, count;
+
+	signature = closure->message->signature;
+	count = arg_count_for_signature(signature);
+	for (i = 0; i < count; i++) {
+		signature = get_next_argument(signature, &arg);
+		switch (arg.type) {
+		case 'o':
+			closure->args[i].n = closure->args[i].o ? closure->args[i].o->id : 0;
+			break;
+		default:
+			break;
+		}
+	}
+}
+#endif
+
 static void
 handle_array(struct wl_resource *resource, uint32_t opcode,
 	     union wl_argument *args,
@@ -230,10 +265,16 @@ handle_array(struct wl_resource *resource, uint32_t opcode,
 
 	log_closure(resource, closure, true);
 
+#ifdef __HAIKU__
+	prepare_closure(closure);
+	if (resource->client->client_enqueue(resource->client->client_display, closure))
+		resource->client->error = 1;
+#else
 	if (send_func(closure, resource->client->connection))
 		resource->client->error = 1;
 
 	wl_closure_destroy(closure);
+#endif
 }
 
 WL_EXPORT void
@@ -324,6 +365,7 @@ destroy_client_with_error(struct wl_client *client, const char *reason)
 	wl_client_destroy(client);
 }
 
+#if 0
 static int
 wl_client_connection_data(int fd, uint32_t mask, void *data)
 {
@@ -456,6 +498,27 @@ wl_client_connection_data(int fd, uint32_t mask, void *data)
 
 	return 1;
 }
+#endif
+
+WL_EXPORT void
+wl_client_dispatch(struct wl_client *client, struct wl_closure *closure)
+{
+	int opcode = closure->opcode;
+
+	struct wl_resource *resource = wl_map_lookup(&client->objects, closure->sender_id);
+	uint32_t resource_flags = wl_map_lookup_flags(&client->objects, closure->sender_id);
+	struct wl_object *object = &resource->object;
+
+	wl_closure_lookup_objects(closure, &client->objects);
+
+	log_closure(resource, closure, false);
+	if (!(resource_flags & WL_MAP_ENTRY_LEGACY) && resource->dispatcher != NULL) {
+		wl_closure_dispatch(closure, resource->dispatcher, object, opcode);
+	} else {
+		wl_closure_invoke(closure, WL_CLOSURE_INVOKE_SERVER, object, opcode, client);
+	}
+	wl_closure_destroy(closure);
+}
 
 /** Flush pending events to the client
  *
@@ -471,7 +534,9 @@ wl_client_connection_data(int fd, uint32_t mask, void *data)
 WL_EXPORT void
 wl_client_flush(struct wl_client *client)
 {
+#ifndef __HAIKU__
 	wl_connection_flush(client->connection);
+#endif
 }
 
 /** Get the display object for the given client
@@ -515,8 +580,20 @@ bind_display(struct wl_client *client, struct wl_display *display);
  *
  * \memberof wl_display
  */
+#ifdef __HAIKU__
 WL_EXPORT struct wl_client *
 wl_client_create(struct wl_display *display, int fd)
+{
+	abort();
+	return NULL;
+}
+
+WL_EXPORT struct wl_client *
+wl_client_create_ips(struct wl_display *display, void *client_display, client_enqueue_proc client_enqueue)
+#else
+WL_EXPORT struct wl_client *
+wl_client_create(struct wl_display *display, int fd)
+#endif
 {
 	struct wl_client *client;
 
@@ -526,6 +603,16 @@ wl_client_create(struct wl_display *display, int fd)
 
 	wl_priv_signal_init(&client->resource_created_signal);
 	client->display = display;
+#ifdef __HAIKU__
+	client->source = NULL;
+	client->source = NULL;
+	client->uid = 0;
+	client->gid = 0;
+	client->pid = 0;
+	client->client_display = client_display;
+	client->client_enqueue = client_enqueue;
+	//client->connection = NULL;
+#else
 	client->source = wl_event_loop_add_fd(display->loop, fd,
 					      WL_EVENT_READABLE,
 					      wl_client_connection_data, client);
@@ -540,6 +627,7 @@ wl_client_create(struct wl_display *display, int fd)
 	client->connection = wl_connection_create(fd);
 	if (client->connection == NULL)
 		goto err_source;
+#endif
 
 	wl_map_init(&client->objects, WL_MAP_SERVER_SIDE);
 
@@ -558,7 +646,9 @@ wl_client_create(struct wl_display *display, int fd)
 
 err_map:
 	wl_map_release(&client->objects);
+#ifndef __HAIKU__
 	wl_connection_destroy(client->connection);
+#endif
 err_source:
 	wl_event_source_remove(client->source);
 err_client:
@@ -632,7 +722,11 @@ wl_client_get_credentials(struct wl_client *client,
 WL_EXPORT int
 wl_client_get_fd(struct wl_client *client)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	return wl_connection_get_fd(client->connection);
+#endif
 }
 
 /** Look up an object in the client name space
@@ -889,7 +983,9 @@ wl_client_destroy(struct wl_client *client)
 	wl_map_for_each(&client->objects, destroy_resource, &serial);
 	wl_map_release(&client->objects);
 	wl_event_source_remove(client->source);
+#ifndef __HAIKU__
 	close(wl_connection_destroy(client->connection));
+#endif
 	wl_list_remove(&client->link);
 	wl_list_remove(&client->resource_created_signal.listener_list);
 	free(client);
@@ -1069,6 +1165,11 @@ wl_display_create(void)
 	if (display == NULL)
 		return NULL;
 
+#ifdef __HAIKU__
+	//display->loop = NULL;
+	display->terminate_efd = -1;
+	display->term_source = NULL;
+#else
 	display->loop = wl_event_loop_create();
 	if (display->loop == NULL) {
 		free(display);
@@ -1087,6 +1188,7 @@ wl_display_create(void)
 
 	if (display->term_source == NULL)
 		goto err_term_source;
+#endif
 
 	wl_list_init(&display->global_list);
 	wl_list_init(&display->socket_list);
@@ -1110,7 +1212,9 @@ wl_display_create(void)
 err_term_source:
 	close(display->terminate_efd);
 err_eventfd:
+#ifndef __HAIKU__
 	wl_event_loop_destroy(display->loop);
+#endif
 	free(display);
 	return NULL;
 }
@@ -1118,6 +1222,8 @@ err_eventfd:
 static void
 wl_socket_destroy(struct wl_socket *s)
 {
+#ifdef __HAIKU__
+#else
 	if (s->source)
 		wl_event_source_remove(s->source);
 	if (s->addr.sun_path[0])
@@ -1130,11 +1236,15 @@ wl_socket_destroy(struct wl_socket *s)
 		close(s->fd_lock);
 
 	free(s);
+#endif
 }
 
 static struct wl_socket *
 wl_socket_alloc(void)
 {
+#ifdef __HAIKU__
+	return NULL;
+#else
 	struct wl_socket *s;
 
 	s = zalloc(sizeof *s);
@@ -1145,6 +1255,7 @@ wl_socket_alloc(void)
 	s->fd_lock = -1;
 
 	return s;
+#endif
 }
 
 /** Destroy Wayland display object.
@@ -1176,7 +1287,9 @@ wl_display_destroy(struct wl_display *display)
 	close(display->terminate_efd);
 	wl_event_source_remove(display->term_source);
 
+#ifndef __HAIKU__
 	wl_event_loop_destroy(display->loop);
+#endif
 
 	wl_list_for_each_safe(global, gnext, &display->global_list, link)
 		free(global);
@@ -1406,7 +1519,11 @@ wl_display_next_serial(struct wl_display *display)
 WL_EXPORT struct wl_event_loop *
 wl_display_get_event_loop(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	return NULL;
+#else
 	return display->loop;
+#endif
 }
 
 WL_EXPORT void
@@ -1424,17 +1541,22 @@ wl_display_terminate(struct wl_display *display)
 WL_EXPORT void
 wl_display_run(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	abort();
+#else
 	display->run = 1;
 
 	while (display->run) {
 		wl_display_flush_clients(display);
 		wl_event_loop_dispatch(display->loop, -1);
 	}
+#endif
 }
 
 WL_EXPORT void
 wl_display_flush_clients(struct wl_display *display)
 {
+#ifndef __HAIKU__
 	struct wl_client *client, *next;
 	int ret;
 
@@ -1448,6 +1570,7 @@ wl_display_flush_clients(struct wl_display *display)
 			wl_client_destroy(client);
 		}
 	}
+#endif
 }
 
 /** Destroy all clients connected to the display
@@ -1488,6 +1611,7 @@ wl_display_destroy_clients(struct wl_display *display)
 	}
 }
 
+#ifndef __HAIKU__
 static int
 socket_data(int fd, uint32_t mask, void *data)
 {
@@ -1507,6 +1631,7 @@ socket_data(int fd, uint32_t mask, void *data)
 
 	return 1;
 }
+#endif
 
 static int
 wl_socket_lock(struct wl_socket *socket)
@@ -1598,6 +1723,7 @@ wl_socket_init_for_display_name(struct wl_socket *s, const char *name)
 	return 0;
 }
 
+#ifndef __HAIKU__
 static int
 _wl_display_add_socket(struct wl_display *display, struct wl_socket *s)
 {
@@ -1629,10 +1755,14 @@ _wl_display_add_socket(struct wl_display *display, struct wl_socket *s)
 	wl_list_insert(display->socket_list.prev, &s->link);
 	return 0;
 }
+#endif
 
 WL_EXPORT const char *
 wl_display_add_socket_auto(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	return NULL;
+#else
 	struct wl_socket *s;
 	int displayno = 0;
 	char display_name[16] = "";
@@ -1667,6 +1797,7 @@ wl_display_add_socket_auto(struct wl_display *display)
 	wl_socket_destroy(s);
 	errno = EINVAL;
 	return NULL;
+#endif
 }
 
 /**  Add a socket with an existing fd to Wayland display for the clients to connect.
@@ -1684,6 +1815,9 @@ wl_display_add_socket_auto(struct wl_display *display)
 WL_EXPORT int
 wl_display_add_socket_fd(struct wl_display *display, int sock_fd)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct wl_socket *s;
 	struct stat buf;
 
@@ -1711,6 +1845,7 @@ wl_display_add_socket_fd(struct wl_display *display, int sock_fd)
 	wl_list_insert(display->socket_list.prev, &s->link);
 
 	return 0;
+#endif
 }
 
 /** Add a socket to Wayland display for the clients to connect.
@@ -1743,6 +1878,9 @@ wl_display_add_socket_fd(struct wl_display *display, int sock_fd)
 WL_EXPORT int
 wl_display_add_socket(struct wl_display *display, const char *name)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct wl_socket *s;
 
 	s = wl_socket_alloc();
@@ -1770,6 +1908,7 @@ wl_display_add_socket(struct wl_display *display, const char *name)
 	}
 
 	return 0;
+#endif
 }
 
 WL_EXPORT void
