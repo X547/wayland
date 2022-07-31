@@ -1703,6 +1703,335 @@ emit_header(struct protocol *protocol, enum side side)
 	       "#endif\n");
 }
 
+static char
+ToCap(char ch)
+{
+	if (ch >= 'a' && ch <= 'z') return ch - 'a' + 'A';
+	return ch;
+}
+
+static char
+ToSmall(char ch)
+{
+	if (ch >= 'A' && ch <= 'Z') return ch - 'A' + 'a';
+	return ch;
+}
+
+static char*
+to_camel_case(const char *src, bool first_capital)
+{
+	char *dst = malloc(512);
+
+	const char *it = src;
+	char *dstIt = dst;
+	bool isDigit = false, isPrevDigit = false;
+	while (*it != '\0') {
+		isPrevDigit = isDigit;
+		if (*it == '_') {
+			it++;
+			isDigit = *it >= '0' && *it <= '9';
+			if (isPrevDigit && isDigit) {
+				*dstIt++ = '_';
+			}
+			*dstIt++ = ToCap(*it);
+			it++;
+		} else {
+			if (dst == dstIt && first_capital) {
+				isDigit = *it >= '0' && *it <= '9';
+				*dstIt++ = ToCap(*it);
+				it++;
+			} else {
+				isDigit = *it >= '0' && *it <= '9';
+				*dstIt++ = ToSmall(*it);
+				it++;
+			}
+		}
+	}
+	*dstIt++ = '\0';
+	
+	return dst;
+}
+
+static void
+emit_header_cpp(struct protocol *protocol, enum side side)
+{
+	struct interface *i;
+	struct message *msg;
+	struct arg *arg;
+	struct enumeration *e;
+	int opcode;
+	bool first, first2;
+
+	printf("#pragma once\n"
+	       "#include \"WlResource.h\"\n"
+	       "\n");
+
+	wl_list_for_each(i, &protocol->interface_list, link) {
+#if 0
+		if (!wl_list_empty(&i->event_list)) {
+			printf("\n"
+			       "enum {\n");
+			opcode = 0;
+			wl_list_for_each(msg, &i->event_list, link)
+				printf("	%s_%s = %d,\n", i->uppercase_name, msg->uppercase_name, opcode++);
+	
+			printf("};\n");
+		}
+#endif
+
+		char *name = to_camel_case(i->name, true);
+		printf("\n"
+		       "class %s: public WlResource {\n"
+		       "public:\n"
+		       "	virtual ~%s() {}\n"
+		       "	const wl_interface *Interface() const override;\n"
+		       "	int Dispatch(uint32_t opcode, const struct wl_message *message, union wl_argument *args) override;\n"
+		       "	static %s *FromResource(struct wl_resource *resource) {return (%s*)WlResource::FromResource(resource);}\n",
+		       name, name, name, name);
+		free(name);
+
+		wl_list_for_each(e, &i->enumeration_list, link) {
+			struct entry *entry;
+			char *name = to_camel_case(e->name, true);
+			printf("\n"
+			       "	enum %s {\n", name);
+			wl_list_for_each(entry, &e->entry_list, link) {
+				char *e_name = to_camel_case(e->name, false);
+				char *entry_name = to_camel_case(entry->name, true);
+				printf("\t\t%s%s = %s,\n",
+				       e_name,
+				       entry_name, entry->value);
+				free(entry_name);
+				free(e_name);
+			}
+			printf("	};\n");
+			free(name);
+		}
+
+		first2 = true;
+		wl_list_for_each(msg, &i->request_list, link) {
+			if (first2) {printf("\n"); first2 = false;}
+			char *name = to_camel_case(msg->name, true);
+			printf("\tvirtual void Handle%s(", name);
+			free(name);
+
+			first = true;
+			wl_list_for_each(arg, &msg->arg_list, link) {
+				if (first) {first = false;} else {printf(", ");}
+				switch (arg->type) {
+				case NEW_ID:
+					if (arg->interface_name == NULL)
+						printf("const char *interface, uint32_t version, uint32_t ");
+					else
+						emit_type(arg);
+					break;
+				case OBJECT:
+					printf("struct wl_resource *");
+					break;
+				default:
+					emit_type(arg);
+				}
+				printf("%s", arg->name);
+			}
+
+			printf(") = 0;\n");
+		}
+		
+		first2 = true;
+		opcode = 0;
+		wl_list_for_each(msg, &i->event_list, link) {
+			if (first2) {printf("\n"); first2 = false;}
+			char *name = to_camel_case(msg->name, true);
+			printf("\tvoid Send%s(", name);
+			free(name);
+
+			first = true;
+			wl_list_for_each(arg, &msg->arg_list, link) {
+				if (first) {first = false;} else {printf(", ");}
+				switch (arg->type) {
+				case OBJECT:
+					printf("struct wl_resource *");
+					break;
+				default:
+					emit_type(arg);
+				}
+				printf("%s", arg->name);
+			}
+
+			printf(") {wl_resource_post_event(ToResource(), %d", opcode++, msg->uppercase_name);
+
+			wl_list_for_each(arg, &msg->arg_list, link)
+				printf(", %s", arg->name);
+
+			printf(");}\n");
+		}
+		
+		printf("};\n");
+	}
+}
+
+static void
+emit_code_cpp(struct protocol *protocol, enum visibility vis)
+{
+	struct interface *i;
+	struct message *msg;
+	struct arg *arg;
+	bool first;
+	
+	char *prot_name = to_camel_case(protocol->name, true);
+	printf("#include \"%s.h\"\n", prot_name);
+	free(prot_name);
+
+	wl_list_for_each(i, &protocol->interface_list, link) {
+		char *if_name = to_camel_case(i->name, true);
+		printf("\n"
+		       "\n"
+		       "extern const struct wl_interface %s_interface;\n", i->name);
+		printf("\n"
+		       "const wl_interface *%s::Interface() const\n"
+		       "{\n"
+		       "	return &%s_interface;\n"
+		       "}\n", if_name, i->name);
+
+#if 0
+		printf("\n"
+		       "const void *%s::Implementation() const\n"
+		       "{\n", if_name);
+		if (wl_list_empty(&i->request_list)) {
+			printf("	return NULL;\n");
+		} else {
+			printf("	static struct {\n");
+			wl_list_for_each(msg, &i->request_list, link) {
+				printf("		void (*%s)(struct wl_client *client, struct wl_resource *resource",
+				       msg->name);
+	
+				wl_list_for_each(arg, &msg->arg_list, link) {
+					printf(", ");
+					switch (arg->type) {
+					case NEW_ID:
+						if (arg->interface_name == NULL)
+							printf("const char *interface, uint32_t version, uint32_t ");
+						else
+							emit_type(arg);
+						break;
+					case OBJECT:
+						printf("struct wl_resource *");
+						break;
+					default:
+						emit_type(arg);
+					}
+					printf("%s", arg->name);
+				}
+				printf(");\n");
+			}
+			printf("	} interface = {\n");
+			wl_list_for_each(msg, &i->request_list, link) {
+				char *name = to_camel_case(msg->name, true);
+				printf("		.%s = [](struct wl_client *client, struct wl_resource *resource",
+				       msg->name);
+	
+				wl_list_for_each(arg, &msg->arg_list, link) {
+					printf(", ");
+					switch (arg->type) {
+					case NEW_ID:
+						if (arg->interface_name == NULL)
+							printf("const char *interface, uint32_t version, uint32_t ");
+						else
+							emit_type(arg);
+						break;
+					case OBJECT:
+						printf("struct wl_resource *");
+						break;
+					default:
+						emit_type(arg);
+					}
+					printf("%s", arg->name);
+				}
+				
+				printf(") {\n"
+				       "			%s::FromResource(resource)->Handle%s(",
+				       if_name, name);
+	
+				first = true;
+				wl_list_for_each(arg, &msg->arg_list, link) {
+					if (first) {first = false;} else {printf(", ");}
+					if (arg->type == NEW_ID && arg->interface_name == NULL)
+						printf("interface, version, ");
+
+					printf("%s", arg->name);
+				}
+				
+				printf(");\n"
+				       "		},\n");
+				free(name);
+			}
+			printf("	};\n"
+			       "	return &interface;\n");
+		}
+		printf("}\n");
+#endif
+
+		printf("\n"
+		       "int %s::Dispatch(uint32_t opcode, const struct wl_message *message, union wl_argument *args)\n"
+		       "{\n", if_name);
+		if (!wl_list_empty(&i->request_list)) {
+			printf("	switch (opcode) {\n");
+
+			uint32_t opcode = 0;
+			wl_list_for_each(msg, &i->request_list, link) {
+				char *name = to_camel_case(msg->name, true);
+				printf("		case %" PRIu32 ":\n", opcode);
+				printf("			Handle%s(", name);
+				first = true;
+				uint32_t arg_idx = 0;
+				wl_list_for_each(arg, &msg->arg_list, link) {
+					if (first) {first = false;} else {printf(", ");}
+					switch (arg->type) {
+					case INT:
+						printf("args[%" PRIu32 "].i", arg_idx++);
+						break;
+					case NEW_ID:
+						if (arg->interface_name == NULL) {
+							printf("args[%" PRIu32 "].s, ", arg_idx++);
+							printf("args[%" PRIu32 "].u, ", arg_idx++);
+						}
+						printf("args[%" PRIu32 "].n", arg_idx++);
+						break;
+					case UNSIGNED:
+						printf("args[%" PRIu32 "].u", arg_idx++);
+						break;
+					case FIXED:
+						printf("args[%" PRIu32 "].f", arg_idx++);
+						break;
+					case STRING:
+						printf("args[%" PRIu32 "].s", arg_idx++);
+						break;
+					case OBJECT:
+						printf("(wl_resource*)args[%" PRIu32 "].o", arg_idx++);
+						break;
+					case ARRAY:
+						printf("args[%" PRIu32 "].a", arg_idx++);
+						break;
+					case FD:
+						printf("args[%" PRIu32 "].h", arg_idx++);
+						break;
+					}
+				}
+				printf(");\n");
+				printf("			return 0;\n");
+				free(name);
+				opcode++;
+			}
+	
+			printf("	}\n");
+		}
+		printf("	return -1;\n");
+		printf("}\n");
+
+		free(if_name);
+	}
+}
+
 static void
 emit_null_run(struct protocol *protocol)
 {
@@ -1920,7 +2249,9 @@ int main(int argc, char *argv[])
 	enum {
 		CLIENT_HEADER,
 		SERVER_HEADER,
+		SERVER_HEADER_CPP,
 		PRIVATE_CODE,
+		PRIVATE_CODE_CPP,
 		PUBLIC_CODE,
 		CODE,
 	} mode;
@@ -1973,8 +2304,12 @@ int main(int argc, char *argv[])
 		mode = CLIENT_HEADER;
 	else if (strcmp(argv[0], "server-header") == 0)
 		mode = SERVER_HEADER;
+	else if (strcmp(argv[0], "server-header-cpp") == 0)
+		mode = SERVER_HEADER_CPP;
 	else if (strcmp(argv[0], "private-code") == 0)
 		mode = PRIVATE_CODE;
+	else if (strcmp(argv[0], "private-code-cpp") == 0)
+		mode = PRIVATE_CODE_CPP;
 	else if (strcmp(argv[0], "public-code") == 0)
 		mode = PUBLIC_CODE;
 	else if (strcmp(argv[0], "code") == 0)
@@ -2064,6 +2399,9 @@ int main(int argc, char *argv[])
 		case SERVER_HEADER:
 			emit_header(&protocol, SERVER);
 			break;
+		case SERVER_HEADER_CPP:
+			emit_header_cpp(&protocol, SERVER);
+			break;
 		case PRIVATE_CODE:
 			emit_code(&protocol, PRIVATE);
 			break;
@@ -2076,6 +2414,10 @@ int main(int argc, char *argv[])
 		case PUBLIC_CODE:
 			emit_code(&protocol, PUBLIC);
 			break;
+		case PRIVATE_CODE_CPP:
+			emit_code_cpp(&protocol, PRIVATE);
+			break;
+		
 	}
 
 	free_protocol(&protocol);

@@ -41,6 +41,9 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#ifdef __HAIKU__
+#include <dlfcn.h>
+#endif
 
 #include "wayland-util.h"
 #include "wayland-os.h"
@@ -99,6 +102,13 @@ struct wl_display {
 		uint32_t id;
 	} protocol_error;
 	int fd;
+#ifdef __HAIKU__
+	int write_fd;
+	void *ips;
+	void *client;
+	int (*client_connected)(void **client, void *display);
+	int (*closure_send)(void *client, struct wl_closure *closure);
+#endif
 	struct wl_map objects;
 	struct wl_event_queue display_queue;
 	struct wl_event_queue default_queue;
@@ -791,6 +801,30 @@ wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
 	return wl_proxy_marshal_array_flags(proxy, opcode, interface, version, flags, args);
 }
 
+#ifdef __HAIKU__
+static void
+prepare_closure(struct wl_closure *closure)
+{
+	const char *signature;
+	struct argument_details arg;
+	struct wl_proxy *proxy;
+	int i, count;
+
+	signature = closure->message->signature;
+	count = arg_count_for_signature(signature);
+	for (i = 0; i < count; i++) {
+		signature = get_next_argument(signature, &arg);
+		switch (arg.type) {
+		case 'o':
+			closure->args[i].n = closure->args[i].o ? closure->args[i].o->id : 0;
+			break;
+		default:
+			break;
+		}
+	}
+}
+#endif
+
 /** Prepare a request to be sent to the compositor
  *
  * \param proxy The proxy object
@@ -856,12 +890,19 @@ wl_proxy_marshal_array_flags(struct wl_proxy *proxy, uint32_t opcode,
 	if (debug_client)
 		wl_closure_print(closure, &proxy->object, true, false, NULL);
 
+#ifdef __HAIKU__
+	prepare_closure(closure);
+	if (disp->closure_send == NULL || disp->closure_send(disp->client, closure)) {
+#else
 	if (wl_closure_send(closure, proxy->display->connection)) {
+#endif
 		wl_log("Error sending request: %s\n", strerror(errno));
 		display_fatal_error(proxy->display, errno);
 	}
 
+#ifndef __HAIKU__
 	wl_closure_destroy(closure);
+#endif
 
  err_unlock:
 	if (flags & WL_MARSHAL_FLAG_DESTROY)
@@ -1062,6 +1103,9 @@ static const struct wl_display_listener display_listener = {
 static int
 connect_to_socket(const char *name)
 {
+#ifdef __HAIKU__
+	return -1;
+#else
 	struct sockaddr_un addr;
 	socklen_t size;
 	const char *runtime_dir;
@@ -1125,6 +1169,7 @@ connect_to_socket(const char *name)
 	}
 
 	return fd;
+#endif
 }
 
 /** Connect to Wayland display on an already open fd
@@ -1202,8 +1247,26 @@ wl_display_connect_to_fd(int fd)
 	if (display->connection == NULL)
 		goto err_connection;
 
+#ifdef __HAIKU__
+	display->ips = dlopen("wayland-server-inproc.so", 0);
+	if (display->ips == NULL)
+		goto err_connection;
+
+	display->client_connected = dlsym(display->ips, "wl_ips_client_connected");
+	display->closure_send = dlsym(display->ips, "wl_ips_closure_send");
+	if (display->client_connected == NULL || display->closure_send == NULL)
+		goto err_symbol;
+
+	if (display->client_connected(&display->client, display))
+		goto err_symbol;
+#endif
+
 	return display;
 
+#ifdef __HAIKU__
+ err_symbol:
+	dlclose(display->ips);
+#endif
  err_connection:
 	pthread_mutex_destroy(&display->mutex);
 	pthread_cond_destroy(&display->reader_cond);
@@ -1245,6 +1308,18 @@ wl_display_connect_to_fd(int fd)
 WL_EXPORT struct wl_display *
 wl_display_connect(const char *name)
 {
+#ifdef __HAIKU__
+	int fds[2];
+	pipe(fds);
+	int fd = fds[0];
+
+	struct wl_display * display = wl_display_connect_to_fd(fd);
+	if (display == NULL) {
+		return NULL;
+	}
+	display->write_fd = fds[1];
+	return display;
+#else
 	char *connection, *end;
 	int flags, fd;
 
@@ -1270,6 +1345,7 @@ wl_display_connect(const char *name)
 	}
 
 	return wl_display_connect_to_fd(fd);
+#endif
 }
 
 /** Close a connection to a Wayland display
@@ -1284,6 +1360,9 @@ wl_display_connect(const char *name)
 WL_EXPORT void
 wl_display_disconnect(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	dlclose(display->ips);
+#endif
 	wl_connection_destroy(display->connection);
 	wl_map_for_each(&display->objects, free_zombies, NULL);
 	wl_map_release(&display->objects);
@@ -1543,6 +1622,44 @@ queue_event(struct wl_display *display, int len)
 	return size;
 }
 
+WL_EXPORT int
+wl_display_enqueue(struct wl_display *display, struct wl_closure *closure)
+{
+	struct wl_proxy *proxy;
+	struct wl_event_queue *queue;
+
+	pthread_mutex_lock(&display->mutex);
+
+	proxy = wl_map_lookup(&display->objects, closure->sender_id);
+
+	if (create_proxies(proxy, closure) < 0) {
+		wl_closure_destroy(closure);
+		return -1;
+	}
+
+	if (wl_closure_lookup_objects(closure, &display->objects) != 0) {
+		wl_closure_destroy(closure);
+		return -1;
+	}
+
+	closure->proxy = proxy;
+
+	increase_closure_args_refcount(closure);
+
+	if (proxy == &display->proxy)
+		queue = &display->display_queue;
+	else
+		queue = proxy->queue;
+
+	char buf[1] = {0};
+	while (write(display->write_fd, buf, 1) != 1) {}
+	wl_list_insert(queue->event_list.prev, &closure->link);
+
+	pthread_mutex_unlock(&display->mutex);
+
+	return 0;
+}
+
 static uint32_t
 id_from_object(union wl_argument *arg)
 {
@@ -1702,6 +1819,9 @@ cancel_read(struct wl_display *display)
 WL_EXPORT int
 wl_display_read_events(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	return 0;
+#else
 	int ret;
 
 	pthread_mutex_lock(&display->mutex);
@@ -1719,6 +1839,7 @@ wl_display_read_events(struct wl_display *display)
 	pthread_mutex_unlock(&display->mutex);
 
 	return ret;
+#endif
 }
 
 static int
@@ -1731,6 +1852,8 @@ dispatch_queue(struct wl_display *display, struct wl_event_queue *queue)
 
 	count = 0;
 	while (!wl_list_empty(&display->display_queue.event_list)) {
+		char buf[1];
+		while (read(display->fd, buf, 1) != 1) {}
 		dispatch_event(display, &display->display_queue);
 		if (display->last_error)
 			goto err;
@@ -1738,6 +1861,8 @@ dispatch_queue(struct wl_display *display, struct wl_event_queue *queue)
 	}
 
 	while (!wl_list_empty(&queue->event_list)) {
+		char buf[1];
+		while (read(display->fd, buf, 1) != 1) {}
 		dispatch_event(display, queue);
 		if (display->last_error)
 			goto err;
@@ -1810,6 +1935,9 @@ WL_EXPORT int
 wl_display_prepare_read_queue(struct wl_display *display,
 			      struct wl_event_queue *queue)
 {
+#ifdef __HAIKU__
+	return 0;
+#else
 	int ret;
 
 	pthread_mutex_lock(&display->mutex);
@@ -1825,6 +1953,7 @@ wl_display_prepare_read_queue(struct wl_display *display,
 	pthread_mutex_unlock(&display->mutex);
 
 	return ret;
+#endif
 }
 
 /** Prepare to read events from the display's file descriptor
@@ -1859,11 +1988,14 @@ wl_display_prepare_read(struct wl_display *display)
 WL_EXPORT void
 wl_display_cancel_read(struct wl_display *display)
 {
+#ifdef __HAIKU__
+#else
 	pthread_mutex_lock(&display->mutex);
 
 	cancel_read(display);
 
 	pthread_mutex_unlock(&display->mutex);
+#endif
 }
 
 static int
@@ -1924,6 +2056,7 @@ WL_EXPORT int
 wl_display_dispatch_queue(struct wl_display *display,
 			  struct wl_event_queue *queue)
 {
+#ifndef __HAIKU__
 	int ret;
 
 	if (wl_display_prepare_read_queue(display, queue) == -1)
@@ -1955,6 +2088,7 @@ wl_display_dispatch_queue(struct wl_display *display,
 
 	if (wl_display_read_events(display) == -1)
 		return -1;
+#endif
 
 	return wl_display_dispatch_queue_pending(display, queue);
 }
@@ -2139,6 +2273,9 @@ wl_display_get_protocol_error(struct wl_display *display,
 WL_EXPORT int
 wl_display_flush(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	return 0;
+#else
 	int ret;
 
 	pthread_mutex_lock(&display->mutex);
@@ -2159,6 +2296,7 @@ wl_display_flush(struct wl_display *display)
 	pthread_mutex_unlock(&display->mutex);
 
 	return ret;
+#endif
 }
 
 /** Set the user data associated with a proxy
