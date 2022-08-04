@@ -1632,13 +1632,35 @@ wl_display_enqueue(struct wl_display *display, struct wl_closure *closure)
 
 	proxy = wl_map_lookup(&display->objects, closure->sender_id);
 
+	if (!proxy || wl_object_is_zombie(&display->objects, closure->sender_id)) {
+		struct wl_zombie *zombie = wl_map_lookup(&display->objects, closure->sender_id);
+		pthread_mutex_unlock(&display->mutex);
+		return 0;
+	}
+
+	if (closure->opcode >= proxy->object.interface->event_count) {
+		wl_log("interface '%s' has no event %u\n",
+		       proxy->object.interface->name, closure->opcode);
+		pthread_mutex_unlock(&display->mutex);
+		return -1;
+	}
+
+	if (proxy == NULL) {
+		fprintf(stderr, "wl_display_enqueue: proxy == NULL, sender_id: %" PRIu32 "\n", closure->sender_id);
+		fprintf(stderr, "[WAIT]", closure->sender_id); fgetc(stdin);
+		pthread_mutex_unlock(&display->mutex);
+		return -1;
+	}
+
 	if (create_proxies(proxy, closure) < 0) {
 		wl_closure_destroy(closure);
+		pthread_mutex_unlock(&display->mutex);
 		return -1;
 	}
 
 	if (wl_closure_lookup_objects(closure, &display->objects) != 0) {
 		wl_closure_destroy(closure);
+		pthread_mutex_unlock(&display->mutex);
 		return -1;
 	}
 
