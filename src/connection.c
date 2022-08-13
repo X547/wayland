@@ -599,6 +599,167 @@ wl_closure_init(const struct wl_message *message, uint32_t size,
 	return closure;
 }
 
+#if __HAIKU__
+static size_t
+wl_closure_data_size(union wl_argument *args, const struct wl_message *message)
+{
+	int i;
+	size_t size = 0;
+
+	int count = arg_count_for_signature(message->signature);;
+	const char *signature = message->signature;
+	for (i = 0; i < count; i++) {
+		struct argument_details arg;
+		signature = get_next_argument(signature, &arg);
+
+		switch (arg.type) {
+		case 's':
+			if (args[i].s != NULL) {
+				size += strlen(args[i].s) + 1;
+			}
+			break;
+		case 'a':
+			if (args[i].a != NULL) {
+				size += args[i].a->size;
+			}
+			break;
+		case 'o':
+			if (args[i].o != NULL) {
+				size += sizeof(struct wl_object);
+			}
+			break;
+		}
+	}
+
+	return size;
+}
+
+struct wl_closure *
+wl_closure_marshal(struct wl_object *sender, uint32_t opcode,
+		   union wl_argument *args,
+		   const struct wl_message *message)
+{
+	struct wl_closure *closure;
+	struct wl_object *object;
+	int i, count, num_arrays, fd, dup_fd;
+	size_t size;
+	const char *signature;
+	struct argument_details arg;
+	struct wl_array *arrays, *arrays_beg;
+	char *data, *data_beg;
+
+	count = arg_count_for_signature(message->signature);
+	if (count > WL_CLOSURE_MAX_ARGS) {
+		wl_log("too many args (%d)\n", count);
+		errno = EINVAL;
+		return NULL;
+	}
+	num_arrays = wl_message_count_arrays(message);
+	size = wl_closure_data_size(args, message);
+
+	closure = calloc(1, sizeof *closure + num_arrays * sizeof(struct wl_array) + size);
+	if (closure == NULL) {
+		wl_log("out of memory\n");
+		errno = ENOMEM;
+		return NULL;
+	}
+
+	closure->count = count;
+	closure->message = message;
+	closure->opcode = opcode;
+	closure->sender_id = sender->id;
+
+	arrays = (struct wl_array*)((char*)closure + sizeof *closure);
+	arrays_beg = arrays;
+	data = (char*)closure + (sizeof *closure + num_arrays * sizeof(struct wl_array));
+	data_beg = data;
+
+	signature = message->signature;
+	for (i = 0; i < count; i++) {
+		signature = get_next_argument(signature, &arg);
+
+		switch (arg.type) {
+		case 'f':
+			closure->args[i].f = args[i].f;
+			break;
+		case 'u':
+			closure->args[i].u = args[i].u;
+			break;
+		case 'i':
+			closure->args[i].i = args[i].i;
+			break;
+		case 's':
+			if (!arg.nullable && args[i].s == NULL)
+				goto err_null;
+
+			closure->args[i].s = data;
+			strcpy(data, args[i].s);
+			data += strlen(args[i].s) + 1;
+			break;
+		case 'o':
+			if (!arg.nullable && args[i].o == NULL)
+				goto err_null;
+			if (args[i].o == NULL) {
+				closure->args[i].o = NULL;
+			} else {
+				closure->args[i].o = data;
+				memcpy(data, args[i].o, sizeof(struct wl_object));
+				data += sizeof(struct wl_object);
+			}
+			break;
+		case 'n':
+			object = args[i].o;
+			if (!arg.nullable && object == NULL)
+				goto err_null;
+
+			closure->args[i].n = object ? object->id : 0;
+			break;
+		case 'a':
+			if (!arg.nullable && args[i].a == NULL)
+				goto err_null;
+
+			closure->args[i].a = arrays;
+			arrays->size = args[i].a->size;
+			arrays->alloc = args[i].a->size;
+			arrays->data = data;
+			memcpy(data, args[i].a->data, args[i].a->size);
+			data += args[i].a->size;
+			arrays++;
+			break;
+		case 'h':
+			fd = args[i].h;
+			dup_fd = wl_os_dupfd_cloexec(fd, 0);
+			if (dup_fd < 0) {
+				wl_closure_destroy(closure);
+				wl_log("error marshalling arguments for %s: dup failed: %s\n",
+				       message->name, strerror(errno));
+				return NULL;
+			}
+			closure->args[i].h = dup_fd;
+			break;
+		default:
+			wl_abort("unhandled format code: '%c'\n", arg.type);
+			break;
+		}
+	}
+
+	if (arrays - arrays_beg != num_arrays)
+		wl_abort("arrays - arrays_beg (%d) != num_arrays (%d)\n", arrays - arrays_beg, num_arrays);
+	
+	if (data - data_beg != size)
+		wl_abort("data - data_beg (%d) != size (%d)\n", data - data_beg, size);
+
+	return closure;
+
+err_null:
+	wl_closure_destroy(closure);
+	wl_log("error marshalling arguments for %s (signature %s): "
+	       "null value passed for arg %i\n", message->name,
+	       message->signature, i);
+	errno = EINVAL;
+	return NULL;
+}
+#else
 struct wl_closure *
 wl_closure_marshal(struct wl_object *sender, uint32_t opcode,
 		   union wl_argument *args,
@@ -674,6 +835,7 @@ err_null:
 	errno = EINVAL;
 	return NULL;
 }
+#endif
 
 struct wl_closure *
 wl_closure_vmarshal(struct wl_object *sender, uint32_t opcode, va_list ap,
