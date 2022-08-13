@@ -39,7 +39,14 @@
 #include <stdarg.h>
 #include <fcntl.h>
 #include <stdio.h>
+#ifndef __HAIKU__
 #include <sys/epoll.h>
+#endif
+
+#ifdef __HAIKU__
+#define SOCK_CLOEXEC 0
+#define MSG_CMSG_CLOEXEC 0
+#endif
 
 #include "wayland-private.h"
 #include "test-runner.h"

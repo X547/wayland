@@ -33,11 +33,18 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <string.h>
+#ifndef __HAIKU__
 #include <sys/epoll.h>
+#endif
 #include <sys/mman.h>
 #include <sys/un.h>
 #ifdef HAVE_SYS_UCRED_H
 #include <sys/ucred.h>
+#endif
+
+#ifdef __HAIKU__
+#define SOCK_CLOEXEC 0
+#define MSG_CMSG_CLOEXEC 0
 #endif
 
 #include "wayland-os.h"

@@ -35,9 +35,9 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#ifndef __HAIKU__
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
-#ifndef __HAIKU__
 #include <sys/timerfd.h>
 #endif
 #include <unistd.h>
@@ -45,6 +45,11 @@
 #include "wayland-private.h"
 #include "wayland-server-core.h"
 #include "wayland-os.h"
+
+#ifdef __HAIKU__
+#define SOCK_CLOEXEC 0
+#define MSG_CMSG_CLOEXEC 0
+#endif
 
 /** \cond INTERNAL */
 
