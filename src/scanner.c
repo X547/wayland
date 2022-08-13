@@ -1834,7 +1834,10 @@ emit_header_cpp(struct protocol *protocol, enum side side)
 				printf("%s", arg->name);
 			}
 
-			printf(") = 0;\n");
+			if (msg->destructor)
+				printf(");\n");
+			else
+				printf(") = 0;\n");
 		}
 		
 		first2 = true;
@@ -2027,6 +2030,40 @@ emit_code_cpp(struct protocol *protocol, enum visibility vis)
 		}
 		printf("	return -1;\n");
 		printf("}\n");
+		
+		wl_list_for_each(msg, &i->request_list, link) {
+			if (!msg->destructor)
+				continue;
+
+			char *name = to_camel_case(msg->name, true);
+			printf("\n");
+			printf("void %s::Handle%s(", if_name, name);
+			free(name);
+
+			first = true;
+			wl_list_for_each(arg, &msg->arg_list, link) {
+				if (first) {first = false;} else {printf(", ");}
+				switch (arg->type) {
+				case NEW_ID:
+					if (arg->interface_name == NULL)
+						printf("const char *interface, uint32_t version, uint32_t ");
+					else
+						emit_type(arg);
+					break;
+				case OBJECT:
+					printf("struct wl_resource *");
+					break;
+				default:
+					emit_type(arg);
+				}
+				printf("%s", arg->name);
+			}
+
+			printf(")\n"
+			       "{\n"
+			       "	Destroy();\n"
+			       "}\n");
+		}
 
 		free(if_name);
 	}
