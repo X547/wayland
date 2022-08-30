@@ -136,11 +136,15 @@ os_create_anonymous_file(off_t size)
 	} else
 #endif
 	{
+#ifdef __HAIKU__
+		path = "/var/shared_memory";
+#else		
 		path = getenv("XDG_RUNTIME_DIR");
 		if (!path || path[0] != '/') {
 			errno = ENOENT;
 			return -1;
 		}
+#endif
 
 		name_size = strlen(path) + sizeof(template);
 		name = malloc(name_size);
