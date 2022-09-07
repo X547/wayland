@@ -285,13 +285,6 @@ wl_display_read_events(struct wl_display *display);
 void
 wl_log_set_handler_client(wl_log_func_t handler);
 
-#ifdef __HAIKU__
-struct wl_closure;
-
-int
-wl_display_enqueue(struct wl_display *display, struct wl_closure *closure);
-#endif
-
 #ifdef  __cplusplus
 }
 #endif

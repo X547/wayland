@@ -692,9 +692,13 @@ wl_closure_marshal(struct wl_object *sender, uint32_t opcode,
 			if (!arg.nullable && args[i].s == NULL)
 				goto err_null;
 
-			closure->args[i].s = data;
-			strcpy(data, args[i].s);
-			data += strlen(args[i].s) + 1;
+			if (args[i].s == NULL) {
+				closure->args[i].s = NULL;
+			} else {
+				closure->args[i].s = data;
+				strcpy(data, args[i].s);
+				data += strlen(args[i].s) + 1;
+			}
 			break;
 		case 'o':
 			if (!arg.nullable && args[i].o == NULL)

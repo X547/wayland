@@ -106,7 +106,7 @@ struct wl_display {
 	int write_fd;
 	void *ips;
 	void *client;
-	int (*client_connected)(void **client, void *display);
+	int (*client_connected)(void **client, void *display, int (*enqueue_proc)(struct wl_display *display, struct wl_closure *closure));
 	int (*closure_send)(void *client, struct wl_closure *closure);
 #endif
 	struct wl_map objects;
@@ -122,6 +122,13 @@ struct wl_display {
 /** \endcond */
 
 static int debug_client = 0;
+
+
+#ifdef __HAIKU__
+static int
+display_enqueue(struct wl_display *display, struct wl_closure *closure);
+#endif
+
 
 /**
  * This helper function wakes up all threads that are
@@ -1257,7 +1264,7 @@ wl_display_connect_to_fd(int fd)
 	if (display->client_connected == NULL || display->closure_send == NULL)
 		goto err_symbol;
 
-	if (display->client_connected(&display->client, display))
+	if (display->client_connected(&display->client, display, display_enqueue))
 		goto err_symbol;
 #endif
 
@@ -1622,8 +1629,9 @@ queue_event(struct wl_display *display, int len)
 	return size;
 }
 
-WL_EXPORT int
-wl_display_enqueue(struct wl_display *display, struct wl_closure *closure)
+#ifdef __HAIKU__
+static int
+display_enqueue(struct wl_display *display, struct wl_closure *closure)
 {
 	struct wl_proxy *proxy;
 	struct wl_event_queue *queue;
@@ -1681,6 +1689,7 @@ wl_display_enqueue(struct wl_display *display, struct wl_closure *closure)
 
 	return 0;
 }
+#endif
 
 static uint32_t
 id_from_object(union wl_argument *arg)

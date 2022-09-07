@@ -1853,6 +1853,7 @@ emit_header_cpp(struct protocol *protocol, enum side side)
 				if (first) {first = false;} else {printf(", ");}
 				switch (arg->type) {
 				case OBJECT:
+				case NEW_ID:
 					printf("struct wl_resource *");
 					break;
 				default:
