@@ -292,6 +292,8 @@ void
 wl_global_set_user_data(struct wl_global *global, void *data);
 
 #ifdef __HAIKU__
+struct wl_closure;
+
 struct wl_client *
 wl_client_create_ips(struct wl_display *display, void *client_display, int (*client_enqueue)(void *client_display, struct wl_closure *closure));
 #else
