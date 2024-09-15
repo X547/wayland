@@ -104,6 +104,7 @@ struct wl_display {
 	int fd;
 #ifdef __HAIKU__
 	int write_fd;
+	bool fd_can_read;
 	void *ips;
 	void *client;
 	int (*client_connected)(void **client, void *display, int (*enqueue_proc)(struct wl_display *display, struct wl_closure *closure));
@@ -814,7 +815,6 @@ prepare_closure(struct wl_closure *closure)
 {
 	const char *signature;
 	struct argument_details arg;
-	struct wl_proxy *proxy;
 	int i, count;
 
 	signature = closure->message->signature;
@@ -1107,12 +1107,10 @@ static const struct wl_display_listener display_listener = {
 	display_handle_delete_id
 };
 
+#ifndef __HAIKU__
 static int
 connect_to_socket(const char *name)
 {
-#ifdef __HAIKU__
-	return -1;
-#else
 	struct sockaddr_un addr;
 	socklen_t size;
 	const char *runtime_dir;
@@ -1176,8 +1174,8 @@ connect_to_socket(const char *name)
 	}
 
 	return fd;
-#endif
 }
+#endif
 
 /** Connect to Wayland display on an already open fd
  *
@@ -1325,6 +1323,7 @@ wl_display_connect(const char *name)
 		return NULL;
 	}
 	display->write_fd = fds[1];
+	display->fd_can_read = false;
 	return display;
 #else
 	char *connection, *end;
@@ -1547,6 +1546,7 @@ increase_closure_args_refcount(struct wl_closure *closure)
 	closure->proxy->refcount++;
 }
 
+#ifndef __HAIKU__
 static int
 queue_event(struct wl_display *display, int len)
 {
@@ -1628,6 +1628,7 @@ queue_event(struct wl_display *display, int len)
 
 	return size;
 }
+#endif
 
 #ifdef __HAIKU__
 static int
@@ -1654,8 +1655,6 @@ display_enqueue(struct wl_display *display, struct wl_closure *closure)
 	}
 
 	if (proxy == NULL) {
-		fprintf(stderr, "wl_display_enqueue: proxy == NULL, sender_id: %" PRIu32 "\n", closure->sender_id);
-		fprintf(stderr, "[WAIT]", closure->sender_id); fgetc(stdin);
 		pthread_mutex_unlock(&display->mutex);
 		return -1;
 	}
@@ -1681,9 +1680,13 @@ display_enqueue(struct wl_display *display, struct wl_closure *closure)
 	else
 		queue = proxy->queue;
 
-	char buf[1] = {0};
-	while (write(display->write_fd, buf, 1) != 1) {}
 	wl_list_insert(queue->event_list.prev, &closure->link);
+
+	if (!display->fd_can_read) {
+		display->fd_can_read = true;
+		char buf[1] = {0};
+		while (write(display->write_fd, buf, 1) != 1) {}
+	}
 
 	pthread_mutex_unlock(&display->mutex);
 
@@ -1752,6 +1755,14 @@ dispatch_event(struct wl_display *display, struct wl_event_queue *queue)
 static int
 read_events(struct wl_display *display)
 {
+#ifdef __HAIKU__
+	if (display->fd_can_read) {
+		char buf[1];
+		while (read(display->fd, buf, 1) != 1) {}
+		display->fd_can_read = false;
+	}
+	return 0;
+#else
 	int total, rem, size;
 	uint32_t serial;
 
@@ -1802,6 +1813,7 @@ read_events(struct wl_display *display)
 	}
 
 	return 0;
+#endif
 }
 
 static void
@@ -1850,9 +1862,6 @@ cancel_read(struct wl_display *display)
 WL_EXPORT int
 wl_display_read_events(struct wl_display *display)
 {
-#ifdef __HAIKU__
-	return 0;
-#else
 	int ret;
 
 	pthread_mutex_lock(&display->mutex);
@@ -1870,7 +1879,6 @@ wl_display_read_events(struct wl_display *display)
 	pthread_mutex_unlock(&display->mutex);
 
 	return ret;
-#endif
 }
 
 static int
@@ -1883,8 +1891,6 @@ dispatch_queue(struct wl_display *display, struct wl_event_queue *queue)
 
 	count = 0;
 	while (!wl_list_empty(&display->display_queue.event_list)) {
-		char buf[1];
-		while (read(display->fd, buf, 1) != 1) {}
 		dispatch_event(display, &display->display_queue);
 		if (display->last_error)
 			goto err;
@@ -1892,8 +1898,6 @@ dispatch_queue(struct wl_display *display, struct wl_event_queue *queue)
 	}
 
 	while (!wl_list_empty(&queue->event_list)) {
-		char buf[1];
-		while (read(display->fd, buf, 1) != 1) {}
 		dispatch_event(display, queue);
 		if (display->last_error)
 			goto err;
@@ -1966,9 +1970,6 @@ WL_EXPORT int
 wl_display_prepare_read_queue(struct wl_display *display,
 			      struct wl_event_queue *queue)
 {
-#ifdef __HAIKU__
-	return 0;
-#else
 	int ret;
 
 	pthread_mutex_lock(&display->mutex);
@@ -1984,7 +1985,6 @@ wl_display_prepare_read_queue(struct wl_display *display,
 	pthread_mutex_unlock(&display->mutex);
 
 	return ret;
-#endif
 }
 
 /** Prepare to read events from the display's file descriptor
@@ -2019,16 +2019,14 @@ wl_display_prepare_read(struct wl_display *display)
 WL_EXPORT void
 wl_display_cancel_read(struct wl_display *display)
 {
-#ifdef __HAIKU__
-#else
 	pthread_mutex_lock(&display->mutex);
 
 	cancel_read(display);
 
 	pthread_mutex_unlock(&display->mutex);
-#endif
 }
 
+#ifndef __HAIKU__
 static int
 wl_display_poll(struct wl_display *display, short int events)
 {
@@ -2043,6 +2041,7 @@ wl_display_poll(struct wl_display *display, short int events)
 
 	return ret;
 }
+#endif
 
 /** Dispatch events in an event queue
  *
