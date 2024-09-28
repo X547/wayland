@@ -2026,7 +2026,6 @@ wl_display_cancel_read(struct wl_display *display)
 	pthread_mutex_unlock(&display->mutex);
 }
 
-#ifndef __HAIKU__
 static int
 wl_display_poll(struct wl_display *display, short int events)
 {
@@ -2041,7 +2040,6 @@ wl_display_poll(struct wl_display *display, short int events)
 
 	return ret;
 }
-#endif
 
 /** Dispatch events in an event queue
  *
@@ -2086,7 +2084,6 @@ WL_EXPORT int
 wl_display_dispatch_queue(struct wl_display *display,
 			  struct wl_event_queue *queue)
 {
-#ifndef __HAIKU__
 	int ret;
 
 	if (wl_display_prepare_read_queue(display, queue) == -1)
@@ -2118,7 +2115,6 @@ wl_display_dispatch_queue(struct wl_display *display,
 
 	if (wl_display_read_events(display) == -1)
 		return -1;
-#endif
 
 	return wl_display_dispatch_queue_pending(display, queue);
 }
